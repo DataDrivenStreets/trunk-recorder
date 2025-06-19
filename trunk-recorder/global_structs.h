@@ -16,6 +16,7 @@ struct Transmission {
   long error_count;
   double freq;
   double length;
+  bool encrypted;
   char filename[255];
 };
 

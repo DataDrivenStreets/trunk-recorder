@@ -2,6 +2,9 @@
 #define MONITOR_SYSTEMS_H
 #include <signal.h>
 #include <stdlib.h>
+#include <fstream>
+#include <sstream>
+#include <ctime>
 
 #include "./global_structs.h"
 #include "call.h"

@@ -237,6 +237,7 @@ void transmission_sink::end_transmission() {
     transmission.spike_count = d_spike_count;
     transmission.error_count = d_error_count;
     transmission.length = length_in_seconds(); // length in seconds
+    transmission.encrypted = (d_current_call != NULL) ? d_current_call->get_encrypted() : false; // Encryption status from call
     d_prior_transmission_length = d_prior_transmission_length + transmission.length;
     strcpy(transmission.filename, current_filename); // Copy the filename
     this->add_transmission(transmission);

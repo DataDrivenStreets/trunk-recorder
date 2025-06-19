@@ -91,6 +91,8 @@ public:
   virtual bool get_conversation_mode() = 0;
   virtual System *get_system() = 0;
   virtual std::vector<Transmission> get_transmissions() = 0;
+  virtual time_t get_next_metadata_conclusion_time() = 0;
+  virtual void set_next_metadata_conclusion_time(time_t t) = 0;
 };
 
 #endif

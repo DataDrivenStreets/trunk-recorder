@@ -50,9 +50,9 @@ bool start_recorder(Call *call, TrunkMessage message, Config &config, System *sy
     call->set_talkgroup_tag("-");
   }
 
-  if (call->get_encrypted() == true || (talkgroup && (talkgroup->mode.compare("E") == 0 || talkgroup->mode.compare("TE") == 0 || talkgroup->mode.compare("DE") == 0))) {
-    call->set_state(MONITORING);
-    call->set_monitoring_state(ENCRYPTED);
+  bool is_encrypted = call->get_encrypted() == true || (talkgroup && (talkgroup->mode.compare("E") == 0 || talkgroup->mode.compare("TE") == 0 || talkgroup->mode.compare("DE") == 0));
+  
+  if (is_encrypted) {
     if (sys->get_hideEncrypted() == false) {
       long unit_id = call->get_current_source_id();
       std::string tag = sys->find_unit_tag(unit_id);
@@ -60,11 +60,11 @@ bool start_recorder(Call *call, TrunkMessage message, Config &config, System *sy
         tag = " (\033[0;34m" + tag + "\033[0m)";
       }
       std::string loghdr = log_header( sys->get_short_name(), call->get_call_num(), call->get_talkgroup_display(), call->get_freq());
-      BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[31mNot Recording: ENCRYPTED\u001b[0m - src: " << unit_id << tag;
+      BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[33mRecording Encrypted Metadata Only\u001b[0m - src: " << unit_id << tag;
     }
-    return false;
   }
 
+  // Try to find a source that can cover this frequency for audio recording
   for (vector<Source *>::iterator it = sources.begin(); it != sources.end(); it++) {
     Source *source = *it;
 
@@ -72,34 +72,36 @@ bool start_recorder(Call *call, TrunkMessage message, Config &config, System *sy
         (source->get_max_hz() >= call->get_freq())) {
       source_found = true;
 
-      if (talkgroup) {
-        int priority = talkgroup->get_priority();
-        BOOST_FOREACH (auto &TGID, sys->get_talkgroup_patch(call->get_talkgroup())) {
-          if (sys->find_talkgroup(TGID) != NULL) {
-            if (sys->find_talkgroup(TGID)->get_priority() < priority) {
-              priority = sys->find_talkgroup(TGID)->get_priority();
-              BOOST_LOG_TRIVIAL(info) << "Temporarily increased priority of talkgroup " << call->get_talkgroup() << " to " << sys->find_talkgroup(TGID)->get_priority() << " due to active patch with talkgroup " << TGID;
+      if (!is_encrypted) {
+        if (talkgroup) {
+          int priority = talkgroup->get_priority();
+          BOOST_FOREACH (auto &TGID, sys->get_talkgroup_patch(call->get_talkgroup())) {
+            if (sys->find_talkgroup(TGID) != NULL) {
+              if (sys->find_talkgroup(TGID)->get_priority() < priority) {
+                priority = sys->find_talkgroup(TGID)->get_priority();
+                BOOST_LOG_TRIVIAL(info) << "Temporarily increased priority of talkgroup " << call->get_talkgroup() << " to " << sys->find_talkgroup(TGID)->get_priority() << " due to active patch with talkgroup " << TGID;
+              }
             }
           }
-        }
-        if (talkgroup->mode.compare("A") == 0) {
-          recorder = source->get_analog_recorder(talkgroup, priority, call);
-          call->set_is_analog(true);
+          if (talkgroup->mode.compare("A") == 0) {
+            recorder = source->get_analog_recorder(talkgroup, priority, call);
+            call->set_is_analog(true);
+          } else {
+            recorder = source->get_digital_recorder(talkgroup, priority, call);
+          }
         } else {
-          recorder = source->get_digital_recorder(talkgroup, priority, call);
-        }
-      } else {
-        std::string loghdr = log_header( call->get_short_name(), call->get_call_num(), call->get_talkgroup_display(), call->get_freq());
-        BOOST_LOG_TRIVIAL(info) << loghdr << "TG not in Talkgroup File ";
+          std::string loghdr = log_header( call->get_short_name(), call->get_call_num(), call->get_talkgroup_display(), call->get_freq());
+          BOOST_LOG_TRIVIAL(info) << loghdr << "TG not in Talkgroup File ";
 
-        // A talkgroup was not found from the talkgroup file.
-        // Use an analog recorder if this is a Type II trunk and defaultMode is analog.
-        // All other cases use a digital recorder.
-        if ((config.default_mode == "analog") && (sys->get_system_type() == "smartnet")) {
-          recorder = source->get_analog_recorder(call);
-          call->set_is_analog(true);
-        } else {
-          recorder = source->get_digital_recorder(call);
+          // A talkgroup was not found from the talkgroup file.
+          // Use an analog recorder if this is a Type II trunk and defaultMode is analog.
+          // All other cases use a digital recorder.
+          if ((config.default_mode == "analog") && (sys->get_system_type() == "smartnet")) {
+            recorder = source->get_analog_recorder(call);
+            call->set_is_analog(true);
+          } else {
+            recorder = source->get_digital_recorder(call);
+          }
         }
       }
 
@@ -119,6 +121,15 @@ bool start_recorder(Call *call, TrunkMessage message, Config &config, System *sy
           recorder_found = false;
           return false;
         }
+      } else if (is_encrypted) {
+        // For encrypted calls, set to monitoring state to track metadata without audio recording
+        call->set_state(MONITORING);
+        call->set_monitoring_state(ENCRYPTED);
+        
+        // Set metadata conclusion timer for 30 seconds from now
+        call->set_next_metadata_conclusion_time(time(NULL) + 30);
+        
+        recorder_found = true;  // Allow the call to continue for metadata tracking
       } else {
         // not recording call either because the priority was too low or no
         // recorders were available
@@ -157,11 +168,23 @@ bool start_recorder(Call *call, TrunkMessage message, Config &config, System *sy
   }
 
   if (!source_found) {
+    // No source can cover this frequency for audio recording, but we can still track metadata
     call->set_state(MONITORING);
     call->set_monitoring_state(NO_SOURCE);
+    
+    // Set metadata conclusion timer for 30 seconds from now
+    call->set_next_metadata_conclusion_time(time(NULL) + 30);
+    
     std::string loghdr = log_header( call->get_short_name(), call->get_call_num(), call->get_talkgroup_display(), call->get_freq());
-    BOOST_LOG_TRIVIAL(error) << loghdr << "\u001b[36mNot Recording: no source covering Freq\u001b[0m";
-    return false;
+    
+    if (is_encrypted) {
+      BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[33mTracking Encrypted Metadata Only - no source covering freq\u001b[0m";
+    } else {
+      BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[33mTracking Metadata Only - no source covering freq\u001b[0m";
+    }
+    
+    // Allow the call to continue for metadata tracking even without a source
+    return true;
   }
   return false;
 }
@@ -280,7 +303,27 @@ void manage_calls(Config &config, std::vector<Call *> &calls) {
 
     // Handle Trunked Calls
 
-    if ((state == MONITORING) && (call->since_last_update() > config.call_timeout)) {
+    if ((state == MONITORING) && ((call->get_monitoring_state() == NO_SOURCE) || (call->get_monitoring_state() == ENCRYPTED)) && (time(NULL) >= call->get_next_metadata_conclusion_time())) {
+      // For metadata-only calls (no source or encrypted), conclude them every 30 seconds
+      // to capture metadata periodically
+      std::string loghdr = log_header( call->get_short_name(), call->get_call_num(), call->get_talkgroup_display(), call->get_freq());
+      
+      if (call->get_monitoring_state() == ENCRYPTED) {
+        BOOST_LOG_TRIVIAL(info) << loghdr << "Concluding encrypted metadata-only call (30-second interval)";
+      } else {
+        BOOST_LOG_TRIVIAL(info) << loghdr << "Concluding metadata-only call (30-second interval)";
+      }
+      
+      call->conclude_call();
+      
+      // Reset the timer for another 30 seconds if the call continues
+      call->set_next_metadata_conclusion_time(time(NULL) + 30);
+      
+      ++it;
+      continue;
+    } else if ((state == MONITORING) && (call->since_last_update() > config.call_timeout)) {
+      // For other monitoring calls, use normal timeout
+      call->conclude_call();
       ended_call = true;
       it = calls.erase(it);
       delete call;
@@ -558,9 +601,207 @@ void handle_call_update(TrunkMessage message, System *sys, std::vector<Call *> &
   }
 }
 
-void handle_message(std::vector<TrunkMessage> messages, System *sys, Config &config, std::vector<Source *> &sources, std::vector<Call *> &calls, gr::top_block_sptr &tb) {
+void log_control_channel_event(const TrunkMessage &message, System *sys, P25Parser *p25_parser = nullptr) {
+  static std::ofstream control_log;
+  static bool log_initialized = false;
+  
+  // Initialize the control channel log file
+  if (!log_initialized) {
+    std::stringstream log_filename;
+    log_filename << "control_channel_" << sys->get_short_name() << ".log";
+    control_log.open(log_filename.str(), std::ios::app);
+    if (control_log.is_open()) {
+      // Write enhanced header with technical parameters
+      control_log << "# Control Channel Event Log for System: " << sys->get_short_name() << std::endl;
+      control_log << "# Format: timestamp,message_type,talkgroup,source,frequency,emergency,encrypted,priority,channel_id,tdma_slot,bandwidth,system_id,wacn,nac,rfss,site_id,opcode,description" << std::endl;
+    }
+    log_initialized = true;
+  }
+  
+  if (!control_log.is_open()) return;
+  
+  // Get current timestamp
+  time_t now = time(0);
+  char timestamp[32];
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+  
+  // Extract technical parameters
+  std::string channel_id_str = "";
+  std::string tdma_slot_str = "";
+  std::string bandwidth_str = "";
+  std::string opcode_str = "";
+  
+  // Get channel information from P25Parser if available and frequency is present
+  if (p25_parser && message.freq > 0 && sys->get_system_type() == "p25") {
+    try {
+      // Calculate channel ID from frequency
+      double freq_mhz = message.freq / 1000000.0;
+      // For now, just use a simple channel calculation - this could be enhanced
+      // to use the actual P25Parser methods once we have access to the channel tables
+      int estimated_chan_id = (int)((message.freq - 851000000) / 25000); // Rough estimation
+      if (estimated_chan_id > 0) {
+        channel_id_str = std::to_string(estimated_chan_id);
+        
+        // Get TDMA slot from message if available
+        if (message.phase2_tdma && message.tdma_slot >= 0) {
+          tdma_slot_str = std::to_string(message.tdma_slot);
+        }
+        
+        // Estimate bandwidth based on TDMA
+        if (message.phase2_tdma) {
+          bandwidth_str = "6.25";  // TDMA uses 6.25 kHz
+        } else {
+          bandwidth_str = "12.5";  // FDMA uses 12.5 kHz
+        }
+      }
+    } catch (...) {
+      // Handle any exceptions from channel calculations
+    }
+  }
+  
+  // Get system identification parameters
+  std::string system_id_str = std::to_string(sys->get_sys_id());
+  std::string wacn_str = std::to_string(sys->get_wacn());
+  std::string nac_str = std::to_string(sys->get_nac());
+  std::string rfss_str = std::to_string(sys->get_sys_rfss());
+  std::string site_id_str = std::to_string(sys->get_sys_site_id());
+  
+  // Convert message type to string
+  std::string msg_type_str;
+  std::string description;
+  
+  switch (message.message_type) {
+    case GRANT:
+      msg_type_str = "GRANT";
+      description = "Radio " + std::to_string(message.source) + " granted talkgroup " + std::to_string(message.talkgroup) + " on " + format_freq(message.freq).str();
+      if (!channel_id_str.empty()) {
+        description += " (CH:" + channel_id_str;
+        if (!tdma_slot_str.empty()) {
+          description += " TS:" + tdma_slot_str;
+        }
+        if (!bandwidth_str.empty()) {
+          description += " BW:" + bandwidth_str + "kHz";
+        }
+        description += ")";
+      }
+      break;
+    case UPDATE:
+      msg_type_str = "UPDATE";
+      description = "Radio " + std::to_string(message.source) + " joins talkgroup " + std::to_string(message.talkgroup) + " on " + format_freq(message.freq).str();
+      if (!channel_id_str.empty()) {
+        description += " (CH:" + channel_id_str;
+        if (!tdma_slot_str.empty()) {
+          description += " TS:" + tdma_slot_str;
+        }
+        description += ")";
+      }
+      break;
+    case UU_V_GRANT:
+      msg_type_str = "UU_V_GRANT";
+      description = "Unit-to-unit call granted from " + std::to_string(message.source) + " to " + std::to_string(message.talkgroup) + " on " + format_freq(message.freq).str();
+      if (!channel_id_str.empty()) {
+        description += " (CH:" + channel_id_str + ")";
+      }
+      break;
+    case UU_V_UPDATE:
+      msg_type_str = "UU_V_UPDATE";
+      description = "Unit-to-unit call update from " + std::to_string(message.source) + " to " + std::to_string(message.talkgroup) + " on " + format_freq(message.freq).str();
+      if (!channel_id_str.empty()) {
+        description += " (CH:" + channel_id_str + ")";
+      }
+      break;
+    case REGISTRATION:
+      msg_type_str = "REGISTRATION";
+      description = "Radio " + std::to_string(message.source) + " registers with system (SYS:" + system_id_str + " SITE:" + site_id_str + ")";
+      break;
+    case DEREGISTRATION:
+      msg_type_str = "DEREGISTRATION";
+      description = "Radio " + std::to_string(message.source) + " deregisters from system (SYS:" + system_id_str + ")";
+      break;
+    case AFFILIATION:
+      msg_type_str = "AFFILIATION";
+      description = "Radio " + std::to_string(message.source) + " affiliates with talkgroup " + std::to_string(message.talkgroup) + " (SYS:" + system_id_str + ")";
+      break;
+    case PATCH_ADD:
+      msg_type_str = "PATCH_ADD";
+      description = "Patch added between talkgroups (primary: " + std::to_string(message.talkgroup) + ") (SYS:" + system_id_str + ")";
+      break;
+    case PATCH_DELETE:
+      msg_type_str = "PATCH_DELETE";
+      description = "Patch removed from talkgroup " + std::to_string(message.talkgroup) + " (SYS:" + system_id_str + ")";
+      break;
+    case CONTROL_CHANNEL:
+      msg_type_str = "CONTROL_CHANNEL";
+      description = "Control channel announcement (SYS:" + system_id_str + " WACN:" + wacn_str + " NAC:" + nac_str + ")";
+      break;
+    case SYSID:
+      msg_type_str = "SYSID";
+      description = "System ID broadcast (SYS:" + system_id_str + " WACN:" + wacn_str + " RFSS:" + rfss_str + " SITE:" + site_id_str + ")";
+      break;
+    case STATUS:
+      msg_type_str = "STATUS";
+      description = "Status message from radio " + std::to_string(message.source) + " (SYS:" + system_id_str + ")";
+      break;
+    case ACKNOWLEDGE:
+      msg_type_str = "ACKNOWLEDGE";
+      description = "Acknowledgment from radio " + std::to_string(message.source) + " (SYS:" + system_id_str + ")";
+      break;
+    case LOCATION:
+      msg_type_str = "LOCATION";
+      description = "Location update from radio " + std::to_string(message.source) + " (SYS:" + system_id_str + ")";
+      break;
+    case DATA_GRANT:
+      msg_type_str = "DATA_GRANT";
+      description = "Data grant for radio " + std::to_string(message.source) + " on " + format_freq(message.freq).str();
+      if (!channel_id_str.empty()) {
+        description += " (CH:" + channel_id_str + ")";
+      }
+      break;
+    case UNKNOWN:
+    default:
+      msg_type_str = "UNKNOWN";
+      description = "Unknown message type";
+      break;
+  }
+  
+  // Add emergency and encryption flags to description
+  if (message.emergency) {
+    description += " [EMERGENCY]";
+  }
+  if (message.encrypted) {
+    description += " [ENCRYPTED]";
+  }
+  
+  // Write enhanced CSV format log entry with technical parameters
+  control_log << timestamp << ","
+              << msg_type_str << ","
+              << message.talkgroup << ","
+              << message.source << ","
+              << message.freq << ","
+              << (message.emergency ? "1" : "0") << ","
+              << (message.encrypted ? "1" : "0") << ","
+              << message.priority << ","
+              << channel_id_str << ","
+              << tdma_slot_str << ","
+              << bandwidth_str << ","
+              << system_id_str << ","
+              << wacn_str << ","
+              << nac_str << ","
+              << rfss_str << ","
+              << site_id_str << ","
+              << opcode_str << ","
+              << "\"" << description << "\""
+              << std::endl;
+  
+  control_log.flush(); // Ensure real-time writing
+}
+
+void handle_message(std::vector<TrunkMessage> messages, System *sys, Config &config, std::vector<Source *> &sources, std::vector<Call *> &calls, gr::top_block_sptr &tb, P25Parser *p25_parser = nullptr) {
   for (std::vector<TrunkMessage>::iterator it = messages.begin(); it != messages.end(); it++) {
     TrunkMessage message = *it;
+    
+    // Log all control channel events in real-time
+    log_control_channel_event(message, sys, p25_parser);
 
     switch (message.message_type) {
     case GRANT:
@@ -843,7 +1084,7 @@ int monitor_messages(Config &config, gr::top_block_sptr &tb, std::vector<Source 
 
           if (system->get_system_type() == "p25") {
             trunk_messages = p25_parser->parse_message(msg, system);
-            handle_message(trunk_messages, system, config, sources, calls, tb);
+            handle_message(trunk_messages, system, config, sources, calls, tb, p25_parser);
             plugman_trunk_message(trunk_messages, system);
           }
 

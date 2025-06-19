@@ -93,6 +93,8 @@ public:
   bool get_conversation_mode();
   System *get_system();
   std::vector<Transmission> get_transmissions();
+  time_t get_next_metadata_conclusion_time();
+  void set_next_metadata_conclusion_time(time_t t);
 
 protected:
   State state;
@@ -133,6 +135,7 @@ protected:
   bool phase2_tdma;
   int tdma_slot;
   double final_length;
+  time_t next_metadata_conclusion_time;  // For metadata-only calls: when to conclude next
 
   Config config;
   Recorder *recorder;

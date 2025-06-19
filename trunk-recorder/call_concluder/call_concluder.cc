@@ -109,6 +109,20 @@ int create_call_json(Call_Data_t& call_info) {
         {"signal_system", call_info.transmission_source_list[i].signal_system},
         {"tag", call_info.transmission_source_list[i].tag}};
   }
+  
+  // Add transmission details including per-transmission encryption status
+  for (std::size_t i = 0; i < call_info.transmission_list.size(); i++) {
+    json_data["transmissionList"] += {
+        {"source", call_info.transmission_list[i].source},
+        {"start_time", call_info.transmission_list[i].start_time},
+        {"stop_time", call_info.transmission_list[i].stop_time},
+        {"length", call_info.transmission_list[i].length},
+        {"sample_count", call_info.transmission_list[i].sample_count},
+        {"error_count", call_info.transmission_list[i].error_count},
+        {"spike_count", call_info.transmission_list[i].spike_count},
+        {"encrypted", call_info.transmission_list[i].encrypted},
+        {"filename", call_info.transmission_list[i].filename}};
+  }
   // Add created JSON to call_info  
   call_info.call_json = json_data;
 
@@ -204,33 +218,50 @@ Call_Data_t upload_call_worker(Call_Data_t call_info) {
     std::string files;
 
     struct stat statbuf;
+    bool has_audio_files = false;
     // loop through the transmission list, pull in things to fill in totals for call_info
     // Using a for loop with iterator
     for (std::vector<Transmission>::iterator it = call_info.transmission_list.begin(); it != call_info.transmission_list.end(); ++it) {
       Transmission t = *it;
 
-      if (stat(t.filename, &statbuf) == 0)
+      // Only process transmissions that have actual audio files
+      if (strlen(t.filename) > 0 && stat(t.filename, &statbuf) == 0)
       {
           files.append(t.filename);
           files.append(" ");
+          has_audio_files = true;
       }
-      else
+      else if (strlen(t.filename) > 0)
       {
           BOOST_LOG_TRIVIAL(error) << "Somehow, " << t.filename << " doesn't exist, not attempting to provide it to sox";
       }
     }
 
-    combine_wav(files, call_info.filename);
+    // Only combine wav files if there are actual audio files to combine
+    if (has_audio_files) {
+      combine_wav(files, call_info.filename);
+    } else {
+      // For metadata-only calls, ensure the filename is empty to indicate no audio file
+      strcpy(call_info.filename, "");
+    }
 
     result = create_call_json(call_info);
 
     if (result < 0) {
       call_info.status = FAILED;
       return call_info;
+    } else {
+      std::string loghdr = log_header( call_info.short_name, call_info.call_num, call_info.talkgroup_display , call_info.freq);
+      if (has_audio_files) {
+        BOOST_LOG_TRIVIAL(info) << loghdr << "JSON status file created: " << call_info.status_filename;
+      } else {
+        BOOST_LOG_TRIVIAL(info) << loghdr << "Metadata-only JSON status file created: " << call_info.status_filename;
+      }
     }
 
-    if (call_info.compress_wav) {
+    if (call_info.compress_wav && has_audio_files) {
       // TR records files as .wav files. They need to be compressed before being upload to online services.
+      // Only compress if there are actual audio files to compress
 
       char *talkgroup_title;
       if (call_info.talkgroup_alpha_tag.length() > 0) {
@@ -246,6 +277,9 @@ Call_Data_t upload_call_worker(Call_Data_t call_info) {
         call_info.status = FAILED;
         return call_info;
       }
+    } else if (call_info.compress_wav && !has_audio_files) {
+      // For metadata-only calls, ensure the converted filename is empty too
+      strcpy(call_info.converted, "");
     }
 
     // Handle the Upload Script, if set
@@ -319,8 +353,15 @@ Call_Data_t Call_Concluder::create_call_data(Call *call, System *sys, Config con
   call_info.freq_error = call->get_freq_error();
   call_info.signal = call->get_signal();
   call_info.noise = call->get_noise();
-  call_info.recorder_num = call->get_recorder()->get_num();
-  call_info.source_num = call->get_recorder()->get_source()->get_num();
+  // Handle recorder information for metadata-only calls
+  if (call->get_recorder() != NULL) {
+    call_info.recorder_num = call->get_recorder()->get_num();
+    call_info.source_num = call->get_recorder()->get_source()->get_num();
+  } else {
+    // For metadata-only calls without recorders
+    call_info.recorder_num = -1;
+    call_info.source_num = -1;
+  }
   call_info.encrypted = call->get_encrypted();
   call_info.emergency = call->get_emergency();
   call_info.priority = call->get_priority();
@@ -428,27 +469,61 @@ void Call_Concluder::conclude_call(Call *call, System *sys, Config config) {
   Call_Data_t call_info = create_call_data(call, sys, config);
 
   std::string loghdr = log_header( call_info.short_name, call_info.call_num, call_info.talkgroup_display , call_info.freq);
+  
+  // Debug logging for metadata-only calls
+  if (call->get_state() == MONITORING && (call->get_monitoring_state() == NO_SOURCE || call->get_monitoring_state() == ENCRYPTED)) {
+    BOOST_LOG_TRIVIAL(info) << loghdr << "DEBUG: Metadata-only call conclusion - transmissions: " << call_info.transmission_list.size() << " encrypted: " << call_info.encrypted << " length: " << call_info.length;
+  }
   if(call->get_state() == MONITORING && call->get_monitoring_state() == SUPERSEDED){
     BOOST_LOG_TRIVIAL(info) << loghdr << "Call has been superseded. Removing files.";
     remove_call_files(call_info);
     return;
   }
   else if (call_info.transmission_list.size()== 0 && call_info.min_transmissions_removed == 0) {
-    BOOST_LOG_TRIVIAL(error) << loghdr << "No Transmissions were recorded!";
-    return;
+    if (call_info.encrypted) {
+      // For encrypted calls, proceed with metadata-only conclusion even without transmissions
+      BOOST_LOG_TRIVIAL(info) << loghdr << "Encrypted call - recording metadata only (no audio transmissions)";
+    } else if (call->get_state() == MONITORING && call->get_monitoring_state() == NO_SOURCE) {
+      // For metadata-only calls (no source available), proceed with metadata recording
+      BOOST_LOG_TRIVIAL(info) << loghdr << "Metadata-only call - recording metadata only (no audio transmissions)";
+    } else {
+      BOOST_LOG_TRIVIAL(error) << loghdr << "No Transmissions were recorded!";
+      return;
+    }
   }
   else if (call_info.transmission_list.size() == 0 && call_info.min_transmissions_removed > 0) {
-    BOOST_LOG_TRIVIAL(info) << loghdr << "No Transmissions were recorded! " << call_info.min_transmissions_removed << " transmissions less than " << sys->get_min_tx_duration() << " seconds were removed.";
-    return;
+    if (call_info.encrypted) {
+      // For encrypted calls, proceed with metadata-only conclusion
+      BOOST_LOG_TRIVIAL(info) << loghdr << "Encrypted call - recording metadata only (" << call_info.min_transmissions_removed << " short transmissions removed)";
+    } else if (call->get_state() == MONITORING && call->get_monitoring_state() == NO_SOURCE) {
+      // For metadata-only calls (no source available), proceed with metadata recording
+      BOOST_LOG_TRIVIAL(info) << loghdr << "Metadata-only call - recording metadata only (" << call_info.min_transmissions_removed << " short transmissions removed)";
+    } else {
+      BOOST_LOG_TRIVIAL(info) << loghdr << "No Transmissions were recorded! " << call_info.min_transmissions_removed << " transmissions less than " << sys->get_min_tx_duration() << " seconds were removed.";
+      return;
+    }
   }
 
   if (call_info.length <= sys->get_min_duration()) {
-    BOOST_LOG_TRIVIAL(info) << loghdr << "Call length: " << call_info.length << " is less than min duration: " << sys->get_min_duration();
-    remove_call_files(call_info);
-    return;
+    if (call_info.encrypted) {
+      // For encrypted calls, proceed with metadata recording even if short
+      BOOST_LOG_TRIVIAL(info) << loghdr << "Encrypted call length: " << call_info.length << " is less than min duration: " << sys->get_min_duration() << " - recording metadata only";
+    } else if (call->get_state() == MONITORING && call->get_monitoring_state() == NO_SOURCE) {
+      // For metadata-only calls (no source available), proceed with metadata recording even if short
+      BOOST_LOG_TRIVIAL(info) << loghdr << "Metadata-only call length: " << call_info.length << " is less than min duration: " << sys->get_min_duration() << " - recording metadata only";
+    } else {
+      BOOST_LOG_TRIVIAL(info) << loghdr << "Call length: " << call_info.length << " is less than min duration: " << sys->get_min_duration();
+      remove_call_files(call_info);
+      return;
+    }
   }
 
 
+  // Debug logging for metadata-only calls reaching upload worker
+  if (call->get_state() == MONITORING && (call->get_monitoring_state() == NO_SOURCE || call->get_monitoring_state() == ENCRYPTED)) {
+    BOOST_LOG_TRIVIAL(info) << loghdr << "DEBUG: Launching upload_call_worker for metadata-only call";
+  }
+  
   call_data_workers.push_back(std::async(std::launch::async, upload_call_worker, call_info));
 }
 

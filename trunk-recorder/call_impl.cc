@@ -56,6 +56,7 @@ Call_impl::Call_impl(long t, double f, System *s, Config c) {
   is_analog = false;
   was_update = false;
   priority = 0;
+  next_metadata_conclusion_time = 0;  // Initialize metadata conclusion timer
   set_freq(f);
   this->update_talkgroup_display();
 }
@@ -88,6 +89,7 @@ Call_impl::Call_impl(TrunkMessage message, System *s, Config c) {
   mode = message.mode;
   is_analog = false;
   priority = message.priority;
+  next_metadata_conclusion_time = 0;  // Initialize metadata conclusion timer
   if (message.message_type == GRANT) {
     was_update = false;
   } else {
@@ -124,7 +126,7 @@ void Call_impl::conclude_call() {
   // BOOST_LOG_TRIVIAL(info) << "conclude_call()";
   stop_time = time(NULL);
 
-  if (state == RECORDING || (state == MONITORING && monitoringState == SUPERSEDED)) {
+  if (state == RECORDING || (state == MONITORING && (monitoringState == SUPERSEDED || monitoringState == NO_SOURCE || monitoringState == ENCRYPTED))) {
     if (!recorder) {
       BOOST_LOG_TRIVIAL(error) << "Call_impl::end_call() State is recording, but no recorder assigned!";
     } else {
@@ -133,7 +135,7 @@ void Call_impl::conclude_call() {
     }
 
 
-    if (this->is_conventional()) {
+    if (this->is_conventional() && recorder) {
       // Update the signal and noise levels for the call
       // the squelch could be open if the program is being forced to stop
       if (this->get_recorder()->is_idle()) {
@@ -143,17 +145,44 @@ void Call_impl::conclude_call() {
       }
         std::string loghdr = log_header( sys->get_short_name(), this->get_call_num(), this->get_talkgroup_display(), this->get_freq());
         BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[33mConcluding Recorded Call\u001b[0m - Last Update: " << this->since_last_update() << "s\tRecorder last write:" << recorder->since_last_write() << "\tCall Elapsed: " << this->elapsed() << "\t Signal: " << floor(this->get_signal()) << "dBm\t Noise: " << floor(this->get_noise()) << "dBm";
-    } else {
+    } else if (recorder) {
         std::string loghdr = log_header( sys->get_short_name(), this->get_call_num(), this->get_talkgroup_display(), this->get_freq());
         BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[33mConcluding Recorded Call\u001b[0m - Last Update: " << this->since_last_update() << "s\tRecorder last write:" << recorder->since_last_write() << "\tCall Elapsed: " << this->elapsed();
+    } else {
+        // For metadata-only calls without a recorder
+        std::string loghdr = log_header( sys->get_short_name(), this->get_call_num(), this->get_talkgroup_display(), this->get_freq());
+        BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[33mConcluding Metadata-Only Call\u001b[0m - Last Update: " << this->since_last_update() << "s\tCall Elapsed: " << this->elapsed();
     }
     if (was_update) {
       std::string loghdr = log_header( sys->get_short_name(), this->get_call_num(), this->get_talkgroup_display(), this->get_freq());
       BOOST_LOG_TRIVIAL(info) << loghdr << "\u001b[33mCall was UPDATE not GRANT\u001b[0m";
     }
-    freq_error = this->get_recorder()->get_freq_error();
-    this->get_recorder()->stop();
-    transmission_list = this->get_recorder()->get_transmission_list();
+    if (this->get_recorder() != NULL) {
+      freq_error = this->get_recorder()->get_freq_error();
+      this->get_recorder()->stop();
+      transmission_list = this->get_recorder()->get_transmission_list();
+    } else {
+      // For metadata-only calls (no recorder), handle transmission list
+      freq_error = 0;
+      if (transmission_list.empty()) {
+        // Create a synthetic transmission entry if no transmissions were tracked
+        Transmission metadata_transmission;
+        metadata_transmission.source = (curr_src_id != -1) ? curr_src_id : -1;
+        metadata_transmission.start_time = start_time;
+        metadata_transmission.stop_time = time(NULL);
+        metadata_transmission.sample_count = 0;  // No audio samples for metadata-only
+        metadata_transmission.spike_count = 0;
+        metadata_transmission.error_count = 0;
+        metadata_transmission.length = difftime(metadata_transmission.stop_time, metadata_transmission.start_time);
+        metadata_transmission.encrypted = encrypted;
+        strcpy(metadata_transmission.filename, ""); // No audio file
+        transmission_list.push_back(metadata_transmission);
+      } else {
+        // Update the stop time of the last transmission
+        transmission_list.back().stop_time = time(NULL);
+        transmission_list.back().length = difftime(transmission_list.back().stop_time, transmission_list.back().start_time);
+      }
+    }
     if (this->get_sigmf_recording() == true) {
       this->get_sigmf_recorder()->stop();
     }
@@ -235,6 +264,14 @@ long Call_impl::get_talkgroup() {
 
 std::vector<Transmission> Call_impl::get_transmissions() {
   return transmission_list;
+}
+
+time_t Call_impl::get_next_metadata_conclusion_time() {
+  return next_metadata_conclusion_time;
+}
+
+void Call_impl::set_next_metadata_conclusion_time(time_t t) {
+  next_metadata_conclusion_time = t;
 }
 
 void Call_impl::clear_transmission_list() {
@@ -369,6 +406,27 @@ bool Call_impl::add_source(long src) {
     if (rec != NULL) {
       rec->set_source(src);
     }
+  } else if (state == MONITORING) {
+    // For metadata-only calls (MONITORING state), create transmission entries from control channel updates
+    // This ensures we track each transmission even without audio recording
+    Transmission update_transmission;
+    update_transmission.source = src;
+    update_transmission.start_time = time(NULL);
+    update_transmission.stop_time = time(NULL); // Will be updated if we get another source change
+    update_transmission.sample_count = 0;  // No audio samples for metadata-only
+    update_transmission.spike_count = 0;
+    update_transmission.error_count = 0;
+    update_transmission.length = 0;  // Will be calculated later
+    update_transmission.encrypted = encrypted;
+    strcpy(update_transmission.filename, ""); // No audio file
+    
+    // Update the stop time of the previous transmission if it exists
+    if (!transmission_list.empty()) {
+      transmission_list.back().stop_time = update_transmission.start_time;
+      transmission_list.back().length = difftime(transmission_list.back().stop_time, transmission_list.back().start_time);
+    }
+    
+    transmission_list.push_back(update_transmission);
   }
 
   plugman_signal(src, NULL, gr::blocks::SignalType::Normal, this, this->get_system(), NULL);
