@@ -1,0 +1,11 @@
+[Unit]
+Description=Run trunk-recorder log rotation daily
+Requires=trunk-recorder-logrotate.service
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

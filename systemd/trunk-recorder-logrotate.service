@@ -1,0 +1,13 @@
+[Unit]
+Description=Trunk-Recorder Log Rotation
+After=trunk-recorder.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/trunk-recorder/rotate_logs.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

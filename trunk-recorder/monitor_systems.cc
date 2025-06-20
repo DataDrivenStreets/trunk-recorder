@@ -1,11 +1,106 @@
 #include "monitor_systems.h"
 using namespace std;
 
+// Signal handling flags
 volatile sig_atomic_t exit_flag = 0;
+volatile sig_atomic_t reload_config_flag = 0;
+volatile sig_atomic_t status_report_flag = 0;
+volatile sig_atomic_t debug_toggle_flag = 0;
+volatile sig_atomic_t hup_flag = 0;
 int exit_code = EXIT_SUCCESS;
 
-void exit_interupt(int sig) { // can be called asynchronously
-  exit_flag = 1;              // set flag
+// Enhanced signal handler for multiple signal types
+void signal_handler(int sig) {
+  switch (sig) {
+    case SIGINT:
+    case SIGTERM:
+      exit_flag = 1;
+      break;
+    case SIGHUP:
+      hup_flag = 1;  // Use HUP for log rotation instead of config reload
+      break;
+    case SIGUSR1:
+      status_report_flag = 1;
+      break;
+    case SIGUSR2:
+      debug_toggle_flag = 1;
+      break;
+    default:
+      // Unknown signal, treat as exit request
+      exit_flag = 1;
+      break;
+  }
+}
+
+// Setup enhanced signal handling using sigaction for better reliability
+void setup_signal_handlers() {
+  struct sigaction sa;
+  
+  // Initialize sigaction structure
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = signal_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART; // Restart interrupted system calls
+  
+  // Install signal handlers
+  if (sigaction(SIGINT, &sa, NULL) == -1) {
+    BOOST_LOG_TRIVIAL(error) << "Failed to install SIGINT handler";
+  }
+  
+  if (sigaction(SIGTERM, &sa, NULL) == -1) {
+    BOOST_LOG_TRIVIAL(error) << "Failed to install SIGTERM handler";
+  }
+  
+  if (sigaction(SIGHUP, &sa, NULL) == -1) {
+    BOOST_LOG_TRIVIAL(error) << "Failed to install SIGHUP handler";
+  }
+  
+  if (sigaction(SIGUSR1, &sa, NULL) == -1) {
+    BOOST_LOG_TRIVIAL(error) << "Failed to install SIGUSR1 handler";
+  }
+  
+  if (sigaction(SIGUSR2, &sa, NULL) == -1) {
+    BOOST_LOG_TRIVIAL(error) << "Failed to install SIGUSR2 handler";
+  }
+  
+  BOOST_LOG_TRIVIAL(info) << "Enhanced signal handlers installed (SIGINT, SIGTERM, SIGHUP, SIGUSR1, SIGUSR2)";
+}
+
+// Handle configuration reload signal
+void handle_config_reload() {
+  BOOST_LOG_TRIVIAL(info) << "Configuration reload requested via SIGHUP (not yet implemented)";
+  // TODO: Implement configuration reload logic
+  // For now, just acknowledge the signal
+  reload_config_flag = 0;
+}
+
+// Simple HUP handler for backward compatibility
+void hup_handler(int sig) {
+  hup_flag = 1;
+}
+
+// Handle HUP signal for log rotation
+void handle_log_rotation() {
+  BOOST_LOG_TRIVIAL(info) << "Log rotation requested via SIGHUP";
+  // The actual log rotation is handled in log_control_channel_event
+  hup_flag = 0;  // Reset the flag
+}
+
+// Handle status report signal
+void handle_status_report(std::vector<Source *> &sources, std::vector<System *> &systems, std::vector<Call *> &calls) {
+  BOOST_LOG_TRIVIAL(info) << "Status report requested via SIGUSR1";
+  print_status(sources, systems, calls);
+  status_report_flag = 0;
+}
+
+// Handle debug toggle signal
+void handle_debug_toggle() {
+  static bool debug_enabled = false;
+  debug_enabled = !debug_enabled;
+  BOOST_LOG_TRIVIAL(info) << "Debug mode toggled via SIGUSR2: " << (debug_enabled ? "ENABLED" : "DISABLED");
+  // TODO: Implement actual debug mode toggle logic
+  // For now, just toggle the flag and log
+  debug_toggle_flag = 0;
 }
 
 uint64_t time_since_epoch_millisec() {
@@ -604,16 +699,27 @@ void handle_call_update(TrunkMessage message, System *sys, std::vector<Call *> &
 void log_control_channel_event(const TrunkMessage &message, System *sys, P25Parser *p25_parser = nullptr) {
   static std::ofstream control_log;
   static bool log_initialized = false;
+  static std::string current_log_filename;
+  
+  // Check for HUP signal to trigger log rotation
+  if (hup_flag && log_initialized) {
+    BOOST_LOG_TRIVIAL(info) << "Rotating control channel log for system: " << sys->get_short_name();
+    control_log.close();
+    log_initialized = false;
+    // HUP flag will be reset by handle_log_rotation() in the main loop
+  }
   
   // Initialize the control channel log file
   if (!log_initialized) {
     std::stringstream log_filename;
     log_filename << "control_channel_" << sys->get_short_name() << ".log";
-    control_log.open(log_filename.str(), std::ios::app);
+    current_log_filename = log_filename.str();
+    control_log.open(current_log_filename, std::ios::app);
     if (control_log.is_open()) {
       // Write enhanced header with technical parameters
       control_log << "# Control Channel Event Log for System: " << sys->get_short_name() << std::endl;
       control_log << "# Format: timestamp,message_type,talkgroup,source,frequency,emergency,encrypted,priority,channel_id,tdma_slot,bandwidth,system_id,wacn,nac,rfss,site_id,opcode,description" << std::endl;
+      BOOST_LOG_TRIVIAL(info) << "Control channel logging started for system: " << sys->get_short_name() << " (file: " << current_log_filename << ")";
     }
     log_initialized = true;
   }
@@ -1036,7 +1142,7 @@ int monitor_messages(Config &config, gr::top_block_sptr &tb, std::vector<Source 
   SmartnetParser *smartnet_parser;
   P25Parser *p25_parser;
 
-  signal(SIGINT, exit_interupt);
+  setup_signal_handlers();
 
   smartnet_parser = new SmartnetParser(); // this has to eventually be generic;
   p25_parser = new P25Parser();
@@ -1061,6 +1167,23 @@ int monitor_messages(Config &config, gr::top_block_sptr &tb, std::vector<Source 
       // Sleep for 5 seconds to allow for all of the Call Concluder threads to finish.
       boost::this_thread::sleep(boost::posix_time::milliseconds(5000));
       return exit_code;
+    }
+
+    // Handle other signal flags
+    if (reload_config_flag) {
+      handle_config_reload();
+    }
+    
+    if (status_report_flag) {
+      handle_status_report(sources, systems, calls);
+    }
+    
+    if (debug_toggle_flag) {
+      handle_debug_toggle();
+    }
+    
+    if (hup_flag) {
+      handle_log_rotation();
     }
 
     process_message_queues(systems);

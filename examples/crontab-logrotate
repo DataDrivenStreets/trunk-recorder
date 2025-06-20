@@ -1,0 +1,15 @@
+# Trunk-Recorder Log Rotation Cron Examples
+#
+# Add these lines to your crontab with: crontab -e
+# 
+# Rotate logs daily at 2:30 AM
+30 2 * * * /opt/trunk-recorder/rotate_logs.sh >> /var/log/trunk-recorder-rotate.log 2>&1
+
+# Rotate logs every 6 hours  
+0 */6 * * * /opt/trunk-recorder/rotate_logs.sh >> /var/log/trunk-recorder-rotate.log 2>&1
+
+# Rotate logs weekly on Sunday at 3:00 AM
+0 3 * * 0 /opt/trunk-recorder/rotate_logs.sh >> /var/log/trunk-recorder-rotate.log 2>&1
+
+# Rotate logs for specific system only (daily at 2:00 AM)
+0 2 * * * /opt/trunk-recorder/rotate_logs.sh -s "MySystemName" >> /var/log/trunk-recorder-rotate.log 2>&1

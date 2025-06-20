@@ -120,6 +120,9 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
+  // Setup signal handlers for enhanced control
+  setup_signal_handlers();
+
   start_plugins(sources, systems);
 
   if (setup_systems(config, tb, sources, systems, calls)) {
