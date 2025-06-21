@@ -716,9 +716,9 @@ void log_control_channel_event(const TrunkMessage &message, System *sys, P25Pars
     current_log_filename = log_filename.str();
     control_log.open(current_log_filename, std::ios::app);
     if (control_log.is_open()) {
-      // Write enhanced header with technical parameters
+      // Write enhanced header with technical parameters and metadata
       control_log << "# Control Channel Event Log for System: " << sys->get_short_name() << std::endl;
-      control_log << "# Format: timestamp,message_type,talkgroup,source,frequency,emergency,encrypted,priority,channel_id,tdma_slot,bandwidth,system_id,wacn,nac,rfss,site_id,opcode,description" << std::endl;
+      control_log << "# Format: timestamp,message_type,talkgroup,source,frequency,emergency,encrypted,priority,channel_id,tdma_slot,bandwidth,system_id,wacn,nac,rfss,site_id,opcode,meta_data,description" << std::endl;
       BOOST_LOG_TRIVIAL(info) << "Control channel logging started for system: " << sys->get_short_name() << " (file: " << current_log_filename << ")";
     }
     log_initialized = true;
@@ -771,6 +771,43 @@ void log_control_channel_event(const TrunkMessage &message, System *sys, P25Pars
   std::string nac_str = std::to_string(sys->get_nac());
   std::string rfss_str = std::to_string(sys->get_sys_rfss());
   std::string site_id_str = std::to_string(sys->get_sys_site_id());
+  
+  // Get additional metadata - opcode and meta field
+  std::string opcode_hex = "";
+  if (message.opcode > 0) {
+    std::stringstream ss;
+    ss << "0x" << std::hex << message.opcode;
+    opcode_hex = ss.str();
+  }
+  opcode_str = opcode_hex;
+  
+  // Clean and escape meta data for CSV
+  std::string meta_data = message.meta;
+  // Replace problematic characters for CSV compatibility
+  size_t pos = 0;
+  // Replace quotes with escaped quotes
+  while ((pos = meta_data.find("\"", pos)) != std::string::npos) {
+    meta_data.replace(pos, 1, "\"\"");
+    pos += 2;
+  }
+  // Replace newlines with spaces
+  pos = 0;
+  while ((pos = meta_data.find("\n", pos)) != std::string::npos) {
+    meta_data.replace(pos, 1, " ");
+    pos += 1;
+  }
+  // Replace carriage returns with spaces
+  pos = 0;
+  while ((pos = meta_data.find("\r", pos)) != std::string::npos) {
+    meta_data.replace(pos, 1, " ");
+    pos += 1;
+  }
+  // Replace tabs with spaces for better readability
+  pos = 0;
+  while ((pos = meta_data.find("\t", pos)) != std::string::npos) {
+    meta_data.replace(pos, 1, " ");
+    pos += 1;
+  }
   
   // Convert message type to string
   std::string msg_type_str;
@@ -846,7 +883,12 @@ void log_control_channel_event(const TrunkMessage &message, System *sys, P25Pars
       break;
     case STATUS:
       msg_type_str = "STATUS";
-      description = "Status message from radio " + std::to_string(message.source) + " (SYS:" + system_id_str + ")";
+      if (!meta_data.empty()) {
+        // Extract status details from meta_data for network status messages
+        description = "Network status update: " + meta_data + " (SYS:" + system_id_str + ")";
+      } else {
+        description = "Status message from radio " + std::to_string(message.source) + " (SYS:" + system_id_str + ")";
+      }
       break;
     case ACKNOWLEDGE:
       msg_type_str = "ACKNOWLEDGE";
@@ -878,7 +920,7 @@ void log_control_channel_event(const TrunkMessage &message, System *sys, P25Pars
     description += " [ENCRYPTED]";
   }
   
-  // Write enhanced CSV format log entry with technical parameters
+  // Write enhanced CSV format log entry with technical parameters and metadata
   control_log << timestamp << ","
               << msg_type_str << ","
               << message.talkgroup << ","
@@ -896,6 +938,7 @@ void log_control_channel_event(const TrunkMessage &message, System *sys, P25Pars
               << rfss_str << ","
               << site_id_str << ","
               << opcode_str << ","
+              << "\"" << meta_data << "\","
               << "\"" << description << "\""
               << std::endl;
   

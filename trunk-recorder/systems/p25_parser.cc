@@ -287,6 +287,12 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
       message.wacn = wacn;
       message.sys_id = syid;
       message.freq = f1;
+      message.opcode = opcode;
+      
+      // Store network status details in meta field
+      std::ostringstream os;
+      os << "mbt3b net stat: wacn " << std::dec << wacn << " syid " << syid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ")";
+      message.meta = os.str();
     }
     BOOST_LOG_TRIVIAL(debug) << "mbt3b net stat: wacn " << std::dec << wacn << " syid " << syid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ") ";
   } else if (opcode == 0x3c) { // adjacent status
@@ -713,6 +719,7 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     message.message_type = ACKNOWLEDGE;
     message.talkgroup = ga;
     message.source = sa;
+    message.opcode = opcode;
 
     BOOST_LOG_TRIVIAL(debug) << "tsbk20\tAcknowledge Response\tga " << std::dec << ga << "\tsa " << sa << "\tReserved: " << op;
   } else if (opcode == 0x21) {
@@ -731,6 +738,7 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     message.message_type = AFFILIATION;
     message.source = ta;
     message.talkgroup = ga;
+    message.opcode = opcode;
 
     BOOST_LOG_TRIVIAL(debug) << "tsbk2f\tUnit Group Affiliation\tSource ID: " << std::setw(7) << ta << "\tGroup Address: " << std::dec << ga << "\tAnouncement Goup: " << aga;
   } else if (opcode == 0x29) { // Secondary Control Channel Broadcast - Explicit
@@ -768,6 +776,12 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
     message.message_type = LOCATION;
     message.talkgroup = ga;
     message.source = sa;
+    message.opcode = opcode;
+
+    // Store location data in meta field
+    std::ostringstream os;
+    os << "tsbk2b\tLocation Registration Response\tga " << std::dec << ga << "\tsa " << sa << "\tValue: " << rv;
+    message.meta = os.str();
 
     BOOST_LOG_TRIVIAL(debug) << "tsbk2b\tLocation Registration Response\tga " << std::dec << ga << "\tsa " << sa << "\tValue: " << rv;
   } else if (opcode == 0x2c) { // Unit Registration Response
@@ -778,6 +792,7 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
 
     message.message_type = REGISTRATION;
     message.source = si;
+    message.opcode = opcode;
 
     BOOST_LOG_TRIVIAL(debug) << "tsbk2c\tUnit Registration COMMAND\tsa " << std::setw(7) << sa << " Source ID: " << si;
   } else if (opcode == 0x2d) { //
@@ -791,6 +806,7 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
 
     message.message_type = DEREGISTRATION;
     message.source = si;
+    message.opcode = opcode;
 
     BOOST_LOG_TRIVIAL(debug) << "tsbk2f\tUnit Deregistration ACK\tSource ID: " << std::setw(7) << si;
   } else if (opcode == 0x30) {
@@ -970,6 +986,12 @@ std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, 
       message.wacn = wacn;
       message.sys_id = syid;
       message.freq = f1;
+      message.opcode = opcode;
+      
+      // Store network status details in meta field
+      std::ostringstream os;
+      os << "tsbk3b net stat: wacn " << std::dec << wacn << " syid " << syid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ")";
+      message.meta = os.str();
     }
     BOOST_LOG_TRIVIAL(debug) << "tsbk3b net stat: wacn " << std::dec << wacn << " syid " << syid << " ch1 " << channel_to_string(ch1, sys_num) << "(" << channel_id_to_freq_string(ch1, sys_num) << ") ";
   } else if (opcode == 0x3c) { // adjacent status
