@@ -3,7 +3,20 @@
 
 using namespace csv;
 
-P25Parser::P25Parser() {}
+P25Parser::P25Parser() {
+  // Initialize comprehensive logger (ENABLED by default)
+  complete_logger = new P25CompleteLogger("p25_control_complete.log");
+  complete_logger->enable_logging(true);
+  BOOST_LOG_TRIVIAL(info) << "P25 comprehensive control channel logging enabled by default: p25_control_complete.log";
+}
+
+P25Parser::~P25Parser() {
+  // Clean up comprehensive logger
+  if (complete_logger) {
+    delete complete_logger;
+    complete_logger = nullptr;
+  }
+}
 
 
 void P25Parser::load_freq_table(std::string custom_freq_table_file, int sys_num) {
@@ -162,6 +175,16 @@ unsigned long P25Parser::bitset_shift_left_mask(boost::dynamic_bitset<> &tsbk, i
 std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost::dynamic_bitset<> &header, boost::dynamic_bitset<> &mbt_data, unsigned long sa, unsigned long nac, int sys_num) {
   std::vector<TrunkMessage> messages;
   TrunkMessage message;
+  
+  // COMPREHENSIVE LOGGING HOOK: Log every MBT message with complete field extraction
+  if (complete_logger && complete_logger->is_logging_enabled()) {
+    try {
+      complete_logger->log_mbt_message(opcode, header, mbt_data, sa, nac, sys_num);
+    } catch (const std::exception &e) {
+      BOOST_LOG_TRIVIAL(error) << "P25CompleteLogger MBT error: " << e.what();
+    }
+  }
+  
   std::ostringstream os;
 
   message.message_type = UNKNOWN;
@@ -338,6 +361,16 @@ std::vector<TrunkMessage> P25Parser::decode_mbt_data(unsigned long opcode, boost
 std::vector<TrunkMessage> P25Parser::decode_tsbk(boost::dynamic_bitset<> &tsbk, unsigned long nac, int sys_num) {
   // self.stats['tsbks'] += 1
   std::vector<TrunkMessage> messages;
+  
+  // COMPREHENSIVE LOGGING HOOK: Log every TSBK message with complete field extraction
+  if (complete_logger && complete_logger->is_logging_enabled()) {
+    try {
+      complete_logger->log_tsbk_message(tsbk, nac, sys_num);
+    } catch (const std::exception &e) {
+      BOOST_LOG_TRIVIAL(error) << "P25CompleteLogger TSBK error: " << e.what();
+    }
+  }
+  
   TrunkMessage message;
   std::ostringstream os;
 
@@ -1187,4 +1220,23 @@ std::vector<TrunkMessage> P25Parser::parse_message(gr::message::sptr msg, System
   }
   messages.push_back(message);
   return messages;
+}
+
+// Comprehensive logging control methods
+void P25Parser::enable_complete_logging(const std::string &log_file) {
+  if (!complete_logger) {
+    complete_logger = new P25CompleteLogger(log_file);
+  } else {
+    // Logger exists, change to new log file
+    complete_logger->set_log_file(log_file);
+  }
+  complete_logger->enable_logging(true);
+  BOOST_LOG_TRIVIAL(info) << "P25 comprehensive control channel logging enabled: " << log_file;
+}
+
+void P25Parser::disable_complete_logging() {
+  if (complete_logger) {
+    complete_logger->enable_logging(false);
+    BOOST_LOG_TRIVIAL(info) << "P25 comprehensive control channel logging disabled";
+  }
 }

@@ -14,6 +14,7 @@
 
 #include "../csv_helper.h"
 #include <csv-parser/csv.hpp>
+#include "p25_complete_logger.h"
 
 struct Freq_Table {
   unsigned long id;
@@ -29,9 +30,13 @@ class P25Parser : public TrunkParser {
   std::map<int, std::map<int, Freq_Table>> freq_tables;
   std::map<int, Freq_Table>::iterator it;
   bool custom_freq_table_loaded = false;
+  
+  // Comprehensive control channel logger
+  P25CompleteLogger *complete_logger;
 
 public:
   P25Parser();
+  ~P25Parser();
   long get_tdma_slot(int chan_id, int sys_num);
   double get_bandwidth(int chan_id, int sys_num);
   std::vector<TrunkMessage> decode_mbt_data(unsigned long opcode, boost::dynamic_bitset<> &header, boost::dynamic_bitset<> &mbt_data, unsigned long link_id, unsigned long nac, int sys_num);
@@ -45,6 +50,10 @@ public:
   double channel_id_to_frequency(int chan_id, int sys_num);
   std::string channel_to_string(int chan, int sys_num);
   std::vector<TrunkMessage> parse_message(gr::message::sptr msg, System *system);
+  
+  // Comprehensive logging control
+  void enable_complete_logging(const std::string &log_file = "p25_control_complete.log");
+  void disable_complete_logging();
 };
 
 #endif
